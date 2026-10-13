@@ -24,6 +24,14 @@ MAX_FAILED_ATTEMPTS = 5
 LOCKOUT_MINUTES = 15
 CAPTCHA_TTL_MINUTES = 10
 
+# Stable challenge content is generated once at import. Answers remain server-side.
+# Five first operands and ten second operands produce 50 unique questions.
+CAPTCHA_CHALLENGES = tuple(
+    (f"{left} + {right}", left + right)
+    for left in range(2, 7)
+    for right in range(3, 13)
+)
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS calls (
     id           INTEGER PRIMARY KEY,          -- the frontend's active.id (ms timestamp)
@@ -31,7 +39,11 @@ CREATE TABLE IF NOT EXISTS calls (
     started_at   TEXT NOT NULL,                -- UTC ISO-8601
     ended_at     TEXT,                         -- NULL = abandoned / still open
     outcome      TEXT CHECK (outcome IN ('AI handled','Transferred','Declined')),
-    user_id      INTEGER REFERENCES users(id) ON DELETE SET NULL
+    user_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    caller_phone TEXT,
+    timezone     TEXT NOT NULL DEFAULT 'Asia/Kolkata',
+    summary      TEXT,
+    status       TEXT NOT NULL DEFAULT 'in_progress' CHECK(status IN ('in_progress','completed','missed','failed'))
 );
 CREATE TABLE IF NOT EXISTS turns (
     id                        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,6 +61,7 @@ CREATE TABLE IF NOT EXISTS turns (
     source                    TEXT NOT NULL CHECK (source IN ('rule_sensitive','gemini','gemini_scam_override')),
     latency_ms                INTEGER,
     created_at                TEXT NOT NULL,
+    client_message_id         TEXT,
     UNIQUE (call_id, turn_no)
 );
 CREATE INDEX IF NOT EXISTS idx_turns_call ON turns(call_id);
@@ -90,6 +103,40 @@ CREATE TABLE IF NOT EXISTS captcha_challenges (
     used       INTEGER NOT NULL DEFAULT 0 CHECK (used IN (0, 1))
 );
 CREATE INDEX IF NOT EXISTS idx_captcha_expires ON captcha_challenges(expires_at);
+
+-- Additive persistence for call metadata, message-level transcripts and the
+-- internal appointment calendar. Existing calls/turns are retained.
+CREATE TABLE IF NOT EXISTS transcript_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    call_id INTEGER NOT NULL REFERENCES calls(id) ON DELETE CASCADE,
+    sequence_no INTEGER NOT NULL,
+    speaker TEXT NOT NULL CHECK (speaker IN ('caller','assistant')),
+    message TEXT NOT NULL,
+    client_message_id TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(call_id, sequence_no),
+    UNIQUE(call_id, client_message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_transcript_call ON transcript_messages(call_id, sequence_no);
+CREATE TABLE IF NOT EXISTS appointments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    booking_reference TEXT NOT NULL UNIQUE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    call_id INTEGER REFERENCES calls(id) ON DELETE CASCADE,
+    contact_name TEXT NOT NULL,
+    contact_phone TEXT,
+    appointment_type TEXT NOT NULL DEFAULT 'General',
+    start_at TEXT NOT NULL,
+    end_at TEXT NOT NULL,
+    timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata',
+    status TEXT NOT NULL CHECK(status IN ('pending','confirmed','cancelled','completed','failed')),
+    idempotency_key TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(user_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_appointments_user_start ON appointments(user_id, start_at);
+CREATE INDEX IF NOT EXISTS idx_appointments_call ON appointments(call_id);
 """
 
 # ── Migration: add user_id column to pre-existing calls table ─────────────────
@@ -145,6 +192,19 @@ def init_db() -> None:
         existing = {row[1] for row in conn.execute("PRAGMA table_info(calls)")}
         if "user_id" not in existing:
             conn.execute(_MIGRATION_ADD_USER_ID)
+        for column, definition in (
+            ("caller_phone", "TEXT"),
+            ("timezone", "TEXT NOT NULL DEFAULT 'Asia/Kolkata'"),
+            ("summary", "TEXT"),
+            ("status", "TEXT NOT NULL DEFAULT 'in_progress' CHECK(status IN ('in_progress','completed','missed','failed'))"),
+        ):
+            if column not in existing:
+                conn.execute(f"ALTER TABLE calls ADD COLUMN {column} {definition}")
+        turn_columns = {row[1] for row in conn.execute("PRAGMA table_info(turns)")}
+        if "client_message_id" not in turn_columns:
+            conn.execute("ALTER TABLE turns ADD COLUMN client_message_id TEXT")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_turns_idempotency ON turns(call_id,client_message_id) WHERE client_message_id IS NOT NULL")
+        conn.execute("UPDATE calls SET status='completed' WHERE ended_at IS NOT NULL AND status='in_progress'")
         # Purge expired captcha rows on startup to keep the table small
         conn.execute(
             "DELETE FROM captcha_challenges WHERE expires_at < ?", (_now(),)
@@ -184,16 +244,22 @@ def _hash_token(raw: str) -> str:
 # ── CAPTCHA ───────────────────────────────────────────────────────────────────
 
 def create_captcha() -> dict:
-    """Generate a simple arithmetic challenge. Returns {id, question}."""
-    a, b = secrets.randbelow(11) + 2, secrets.randbelow(11) + 2
-    ops = [('+', a + b), ('-', a - b), ('×', a * b)]
-    op_sym, answer = secrets.choice(ops)
-    question = f"{a} {op_sym} {b}"
+    """Issue a random challenge from the fixed bank; return only its ID and question."""
     challenge_id = secrets.token_urlsafe(24)
     expires = (
         _now_dt() + timedelta(minutes=CAPTCHA_TTL_MINUTES)
     ).isoformat(timespec="seconds")
     with _conn() as conn:
+        previous = conn.execute(
+            "SELECT question FROM captcha_challenges ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+        previous_question = previous["question"] if previous else None
+        candidates = tuple(
+            (question, answer)
+            for question, answer in CAPTCHA_CHALLENGES
+            if question != previous_question
+        ) or CAPTCHA_CHALLENGES
+        question, answer = secrets.choice(candidates)
         conn.execute(
             "INSERT INTO captcha_challenges (id, question, answer, expires_at, used) VALUES (?,?,?,?,0)",
             (challenge_id, question, answer, expires),
@@ -227,7 +293,10 @@ def verify_captcha(challenge_id: str, user_answer: int) -> bool:
             "UPDATE captcha_challenges SET used = 1 WHERE id = ?", (challenge_id,)
         )
         conn.commit()
-        return int(row["answer"]) == int(user_answer)
+        try:
+            return int(row["answer"]) == int(user_answer)
+        except (TypeError, ValueError, OverflowError):
+            return False
     except Exception:
         conn.rollback()
         raise
@@ -365,29 +434,178 @@ def purge_expired_sessions() -> None:
 
 def save_turn(call_id: int, caller_message: str, analysis: dict, source: str,
               latency_ms: int | None = None, caller_name: str | None = None,
-              user_id: int | None = None) -> int:
+              user_id: int | None = None, client_message_id: str | None = None) -> int:
     """Store one analyzed exchange. `analysis` is ChatAnalysis.model_dump() from main.py."""
     if source not in SOURCES:
         raise ValueError(f"source must be one of {SOURCES}")
     with _conn() as conn:
         _ensure_call(conn, call_id, caller_name, user_id=user_id)
+        if client_message_id:
+            previous = conn.execute("SELECT id FROM turns WHERE call_id=? AND client_message_id=?", (int(call_id), client_message_id)).fetchone()
+            if previous:
+                return int(previous["id"])
         turn_no = conn.execute(
             "SELECT COALESCE(MAX(turn_no), 0) + 1 FROM turns WHERE call_id = ?", (int(call_id),)
         ).fetchone()[0]
         cur = conn.execute(
             """INSERT INTO turns (call_id, turn_no, caller_message, reply, summary, intent, urgency, risk,
                                   review_required, suggested_action, sensitive_info_requested, source,
-                                  latency_ms, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                  latency_ms, created_at, client_message_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (int(call_id), turn_no,
              REDACTED_CALLER_MESSAGE if source == "rule_sensitive" else caller_message[:2000],
              analysis["reply"][:4000], analysis["summary"][:1000],
              analysis["intent"][:200], analysis["urgency"], analysis["risk"],
              int(bool(analysis["review_required"])), analysis["suggested_action"],
              int(bool(analysis["sensitive_info_requested"])), source,
-             int(latency_ms) if latency_ms is not None else None, _now()),
+             int(latency_ms) if latency_ms is not None else None, _now(), client_message_id),
         )
         return cur.lastrowid
+
+
+def start_call(call_id: int, caller_name: str, caller_phone: str | None,
+               user_id: int, timezone_name: str = "Asia/Kolkata") -> dict:
+    with _conn() as conn:
+        conn.execute(
+            """INSERT OR IGNORE INTO calls(id,caller_name,caller_phone,started_at,user_id,timezone)
+               VALUES(?,?,?,?,?,?)""",
+            (int(call_id), _name(caller_name), (caller_phone or "")[:30] or None,
+             _now(), int(user_id), timezone_name[:64]),
+        )
+        row = conn.execute("SELECT * FROM calls WHERE id=?", (int(call_id),)).fetchone()
+        if not row or row["user_id"] != int(user_id):
+            raise PermissionError("Call does not belong to the authenticated user.")
+        return dict(row)
+
+
+def save_transcript_message(call_id: int, user_id: int, speaker: str, message: str,
+                            client_message_id: str | None = None) -> dict:
+    if speaker not in ("caller", "assistant") or not message.strip() or len(message) > 4000:
+        raise ValueError("Invalid transcript message.")
+    with _conn() as conn:
+        call = conn.execute("SELECT user_id FROM calls WHERE id=?", (int(call_id),)).fetchone()
+        if not call or call["user_id"] != int(user_id):
+            raise PermissionError("Call not found.")
+        if client_message_id:
+            old = conn.execute("SELECT * FROM transcript_messages WHERE call_id=? AND client_message_id=?", (int(call_id), client_message_id)).fetchone()
+            if old:
+                return dict(old)
+        sequence = conn.execute("SELECT COALESCE(MAX(sequence_no),0)+1 FROM transcript_messages WHERE call_id=?", (int(call_id),)).fetchone()[0]
+        cur = conn.execute(
+            "INSERT INTO transcript_messages(call_id,sequence_no,speaker,message,client_message_id,created_at) VALUES(?,?,?,?,?,?)",
+            (int(call_id), sequence, speaker, message.strip(), client_message_id, _now()),
+        )
+        return dict(conn.execute("SELECT * FROM transcript_messages WHERE id=?", (cur.lastrowid,)).fetchone())
+
+
+def delete_call(call_id: int, user_id: int) -> bool:
+    with _conn() as conn:
+        cur = conn.execute("DELETE FROM calls WHERE id=? AND user_id=?", (int(call_id), int(user_id)))
+        return cur.rowcount == 1
+
+
+def set_call_summary(call_id: int, user_id: int, summary: str) -> None:
+    with _conn() as conn:
+        cur = conn.execute("UPDATE calls SET summary=? WHERE id=? AND user_id=?",
+                            ((summary or "")[:1000], int(call_id), int(user_id)))
+        if cur.rowcount != 1:
+            raise PermissionError("Call not found.")
+
+
+def get_transcript(call_id: int, user_id: int) -> list[dict]:
+    with _conn() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT sequence_no,speaker,message,created_at FROM transcript_messages WHERE call_id=? AND call_id IN (SELECT id FROM calls WHERE user_id=?) ORDER BY sequence_no",
+            (int(call_id), int(user_id)),
+        )]
+
+
+def list_appointments(user_id: int, status: str | None = None) -> list[dict]:
+    with _conn() as conn:
+        if status:
+            rows = conn.execute("SELECT * FROM appointments WHERE user_id=? AND status=? ORDER BY start_at", (int(user_id), status))
+        else:
+            rows = conn.execute("SELECT * FROM appointments WHERE user_id=? ORDER BY start_at", (int(user_id),))
+        return [dict(r) for r in rows]
+
+
+def get_upcoming_appointments(user_id: int, now_utc: str) -> list[dict]:
+    with _conn() as conn:
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM appointments WHERE user_id=? AND status='confirmed' AND start_at>=? ORDER BY start_at LIMIT 50",
+            (int(user_id), now_utc),
+        )]
+
+
+def get_appointment(appointment_id: int, user_id: int) -> dict | None:
+    with _conn() as conn:
+        row = conn.execute("SELECT * FROM appointments WHERE id=? AND user_id=?", (int(appointment_id), int(user_id))).fetchone()
+        return dict(row) if row else None
+
+
+def _appointment_conn():
+    conn = sqlite3.connect(DB_PATH, timeout=10, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("BEGIN IMMEDIATE")
+    return conn
+
+
+def appointment_conflicts(user_id: int, start_at: str, end_at: str, exclude_id: int | None = None) -> bool:
+    with _conn() as conn:
+        query = "SELECT 1 FROM appointments WHERE user_id=? AND status='confirmed' AND start_at < ? AND end_at > ?"
+        args: list = [int(user_id), end_at, start_at]
+        if exclude_id is not None:
+            query += " AND id != ?"; args.append(int(exclude_id))
+        return conn.execute(query + " LIMIT 1", args).fetchone() is not None
+
+
+def book_appointment(user_id: int, values: dict) -> dict:
+    conn = _appointment_conn()
+    try:
+        if values.get("idempotency_key"):
+            existing = conn.execute("SELECT * FROM appointments WHERE user_id=? AND idempotency_key=?", (int(user_id), values["idempotency_key"])).fetchone()
+            if existing:
+                conn.commit(); return dict(existing)
+        conflict = conn.execute(
+            "SELECT 1 FROM appointments WHERE user_id=? AND status='confirmed' AND start_at < ? AND end_at > ? LIMIT 1",
+            (int(user_id), values["end_at"], values["start_at"]),
+        ).fetchone()
+        if conflict:
+            raise ValueError("That appointment time is unavailable.")
+        now = _now()
+        cur = conn.execute(
+            """INSERT INTO appointments(booking_reference,user_id,call_id,contact_name,contact_phone,appointment_type,start_at,end_at,timezone,status,idempotency_key,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,'confirmed',?,?,?)""",
+            (values["booking_reference"], int(user_id), values.get("call_id"), _name(values.get("contact_name")),
+             (values.get("contact_phone") or "")[:30] or None, (values.get("appointment_type") or "General")[:100],
+             values["start_at"], values["end_at"], values["timezone"], values.get("idempotency_key"), now, now),
+        )
+        row = conn.execute("SELECT * FROM appointments WHERE id=?", (cur.lastrowid,)).fetchone()
+        conn.commit(); return dict(row)
+    except Exception:
+        conn.rollback(); raise
+    finally:
+        conn.close()
+
+
+def update_appointment(appointment_id: int, user_id: int, start_at: str | None = None,
+                       end_at: str | None = None, status: str | None = None) -> dict | None:
+    conn = _appointment_conn()
+    try:
+        row = conn.execute("SELECT * FROM appointments WHERE id=? AND user_id=?", (int(appointment_id), int(user_id))).fetchone()
+        if not row: conn.rollback(); return None
+        new_start = start_at or row["start_at"]; new_end = end_at or row["end_at"]
+        new_status = status or row["status"]
+        if new_status == "confirmed":
+            conflict = conn.execute("SELECT 1 FROM appointments WHERE user_id=? AND status='confirmed' AND start_at < ? AND end_at > ? AND id != ? LIMIT 1", (int(user_id), new_end, new_start, int(appointment_id))).fetchone()
+            if conflict: raise ValueError("That appointment time is unavailable.")
+        conn.execute("UPDATE appointments SET start_at=?,end_at=?,status=?,updated_at=? WHERE id=? AND user_id=?", (new_start,new_end,new_status,_now(),int(appointment_id),int(user_id)))
+        updated = conn.execute("SELECT * FROM appointments WHERE id=?", (int(appointment_id),)).fetchone()
+        conn.commit(); return dict(updated)
+    except Exception:
+        conn.rollback(); raise
+    finally: conn.close()
 
 
 def complete_call(call_id: int, outcome: str, caller_name: str | None = None,
@@ -397,9 +615,14 @@ def complete_call(call_id: int, outcome: str, caller_name: str | None = None,
         raise ValueError(f"outcome must be one of {OUTCOMES}")
     with _conn() as conn:
         _ensure_call(conn, call_id, caller_name, user_id=user_id)
+        summary = conn.execute("SELECT summary FROM turns WHERE call_id=? ORDER BY turn_no DESC LIMIT 1", (int(call_id),)).fetchone()
+        summary_text = summary[0] if summary else None
+        if not summary_text:
+            last_message = conn.execute("SELECT message FROM transcript_messages WHERE call_id=? AND speaker='caller' ORDER BY sequence_no DESC LIMIT 1", (int(call_id),)).fetchone()
+            summary_text = (f"Call ended after caller request: {last_message[0][:220]}" if last_message else "Call ended without a captured conversation transcript.")
         cur = conn.execute(
-            "UPDATE calls SET outcome = ?, ended_at = ? WHERE id = ? AND outcome IS NULL",
-            (outcome, _now(), int(call_id)),
+            "UPDATE calls SET outcome = ?, ended_at = ?, status = 'completed', summary = COALESCE(summary, ?) WHERE id = ? AND outcome IS NULL",
+            (outcome, _now(), summary_text[:1000], int(call_id)),
         )
         return cur.rowcount == 1
 
@@ -417,14 +640,15 @@ def get_call(call_id: int, user_id: int | None = None) -> dict | None:
         if not call:
             return None
         turns = conn.execute("SELECT * FROM turns WHERE call_id = ? ORDER BY turn_no", (int(call_id),)).fetchall()
-        return {**dict(call), "turns": [dict(t) for t in turns]}
+        transcript = conn.execute("SELECT sequence_no,speaker,message,created_at FROM transcript_messages WHERE call_id=? ORDER BY sequence_no", (int(call_id),)).fetchall()
+        return {**dict(call), "turns": [dict(t) for t in turns], "transcript": [dict(t) for t in transcript]}
 
 
 def get_recent_calls(limit: int = 50, user_id: int | None = None) -> list[dict]:
     """Return the most recent calls with their turns, ordered by started_at DESC.
     When user_id is given, only that user's calls are returned.
     """
-    limit = max(1, min(int(limit), 100))
+    limit = max(1, min(int(limit), 200))
     with _conn() as conn:
         if user_id is not None:
             calls = [dict(r) for r in conn.execute(
@@ -442,11 +666,15 @@ def get_recent_calls(limit: int = 50, user_id: int | None = None) -> list[dict]:
         turns = [dict(r) for r in conn.execute(
             f"SELECT * FROM turns WHERE call_id IN ({placeholders}) ORDER BY call_id, turn_no", call_ids
         ).fetchall()]
+        transcripts = [dict(r) for r in conn.execute(
+            f"SELECT call_id,sequence_no,speaker,message,created_at FROM transcript_messages WHERE call_id IN ({placeholders}) ORDER BY call_id,sequence_no", call_ids
+        )]
     by_call = {}
     for t in turns:
         by_call.setdefault(t["call_id"], []).append(t)
     for c in calls:
         c["turns"] = by_call.get(c["id"], [])
+        c["transcript"] = [t for t in transcripts if t["call_id"] == c["id"]]
     return calls
 
 
@@ -564,6 +792,9 @@ def export_calls(user_id: int | None = None) -> list[dict]:
             return []
         call_ids = [c["id"] for c in calls]
         placeholders = ",".join("?" for _ in call_ids)
+        transcripts = [dict(r) for r in conn.execute(
+            f"SELECT call_id,sequence_no,speaker,message,created_at FROM transcript_messages WHERE call_id IN ({placeholders}) ORDER BY call_id,sequence_no", call_ids
+        )]
         turns = [dict(r) for r in conn.execute(
             f"SELECT * FROM turns WHERE call_id IN ({placeholders}) ORDER BY call_id, turn_no",
             call_ids,
@@ -573,6 +804,7 @@ def export_calls(user_id: int | None = None) -> list[dict]:
         by_call.setdefault(t["call_id"], []).append(t)
     for c in calls:
         c["turns"] = by_call.get(c["id"], [])
+        c["transcript"] = [t for t in transcripts if t["call_id"] == c["id"]]
     return calls
 
 

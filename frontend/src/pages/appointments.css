@@ -1,0 +1,26 @@
+.calendar-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:14px 0}
+.calendar-navigation{display:flex;align-items:center;justify-content:flex-end;gap:9px;flex-wrap:wrap}
+.calendar-navigation strong{min-width:180px;text-align:center;font-size:11px}
+.calendar-navigation input{width:138px;padding:7px 8px;border:1px solid var(--line);border-radius:8px;background:#0e1423;color:var(--text);font-size:10px}
+.appointments-calendar{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));border-top:1px solid var(--line);border-left:1px solid var(--line);margin:12px 0 20px;overflow:auto}
+.calendar-day{min-width:90px;min-height:84px;padding:7px;border-right:1px solid var(--line);border-bottom:1px solid var(--line);background:#0e142355;display:grid;align-content:start;gap:5px}
+.calendar-view-month .calendar-day{min-height:94px}
+.calendar-day-muted{opacity:.46}
+.calendar-day-label{font-size:9px;color:#aeb6ca;font-weight:650}
+.calendar-event{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:4px 5px;border-radius:5px;background:#8984ff20;color:#c3c0ff;font-size:8px}
+.event-cancelled,.event-failed{background:#f18d9a18;color:#f3aab3}
+.event-completed{background:#81d7bb18;color:#9de0c8}
+.calendar-more{color:#929bb0;font-size:8px}
+.calendar-day.calendar-day-muted .calendar-event{display:none}
+.calendar-day.calendar-day-muted{min-height:72px}
+.calendar-day .calendar-event{max-width:100%}
+.calendar-day .calendar-event[title]{cursor:default}
+.calendar-day:not(.calendar-day-muted):hover{background:#171d30}
+.calendar-day.calendar-day-muted:hover{background:#0e142355}
+.calendar-day:first-child{border-left:1px solid var(--line)}
+.calendar-view-month .calendar-day-label{font-size:10px}
+.calendar-view-week .calendar-day{min-height:150px}
+.calendar-day .calendar-day-label{position:sticky;top:0}
+.calendar-toolbar .segmented-control{flex:none}
+.appointments-calendar.calendar-view-day{grid-template-columns:1fr}
+@media(max-width:760px){.calendar-toolbar{align-items:flex-start;flex-direction:column}.calendar-navigation{width:100%;justify-content:space-between}.calendar-navigation strong{min-width:0}.calendar-view-month{grid-template-columns:repeat(7,minmax(70px,1fr))}.calendar-view-month .calendar-day{min-height:68px;padding:5px}.calendar-event{font-size:7px}.calendar-view-week{grid-template-columns:repeat(7,minmax(110px,1fr))}.calendar-day.calendar-day-muted .calendar-event{display:block}}

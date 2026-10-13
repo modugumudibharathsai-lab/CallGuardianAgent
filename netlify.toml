@@ -1,0 +1,4 @@
+[build]
+  base = "."
+  command = "bash scripts/build_netlify.sh"
+  publish = "netlify-publish"

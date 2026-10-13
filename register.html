@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Create Account — CallGuardianAI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700&family=Sora:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="auth.css">
+</head>
+<body>
+  <canvas id="bg" aria-hidden="true"></canvas>
+
+  <div class="auth-wrap">
+    <div class="auth-card">
+
+      <!-- Brand -->
+      <a href="login.html" class="brand" aria-label="Back to login">
+        <span class="logo" aria-hidden="true"></span>
+        <span class="brand-text">CallGuardian<i>AI</i></span>
+      </a>
+
+      <h1>Create an account</h1>
+      <p class="subtitle">Set up your free CallGuardianAI account.</p>
+
+      <!-- Alert banner -->
+      <div id="alert" class="alert" role="alert" aria-live="polite">
+        <span class="alert-icon" aria-hidden="true">⚠</span>
+        <span id="alertMsg"></span>
+      </div>
+
+      <form id="regForm" novalidate autocomplete="on">
+
+        <!-- Username -->
+        <div class="field">
+          <label for="username">Username</label>
+          <input
+            id="username"
+            name="username"
+            type="text"
+            autocomplete="username"
+            placeholder="e.g. priya_sharma"
+            minlength="3"
+            maxlength="32"
+            required
+            aria-describedby="usernameErr usernameHint"
+          >
+          <span class="field-error" id="usernameErr" role="alert"></span>
+          <span id="usernameHint" style="font-size:.78rem;color:#5a6b94;display:block;margin-top:3px">
+            3–32 chars. Letters, digits, underscores, hyphens, dots.
+          </span>
+        </div>
+
+        <!-- Email -->
+        <div class="field">
+          <label for="email">Email address</label>
+          <input
+            id="email"
+            name="email"
+            type="email"
+            autocomplete="email"
+            placeholder="you@example.com"
+            maxlength="254"
+            required
+            aria-describedby="emailErr emailStatus"
+          >
+          <span class="field-error" id="emailErr" role="alert"></span>
+          <span class="email-status" id="emailStatus" aria-live="polite"></span>
+        </div>
+
+        <!-- Password -->
+        <div class="field">
+          <label for="password">Password</label>
+          <div class="pw-wrap">
+            <input
+              id="password"
+              name="password"
+              type="password"
+              autocomplete="new-password"
+              placeholder="Create a strong password"
+              minlength="8"
+              maxlength="128"
+              required
+              aria-describedby="passwordErr pwReqs"
+            >
+            <button
+              type="button"
+              class="pw-toggle"
+              aria-label="Show password"
+              aria-pressed="false"
+              id="pwToggle"
+            >👁</button>
+          </div>
+          <!-- Strength meter -->
+          <div class="strength-bar" id="strengthBar" role="meter" aria-label="Password strength" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div class="strength-fill" id="strengthFill"></div>
+          </div>
+          <div class="strength-label" id="strengthLabel" aria-live="polite"></div>
+          <!-- Requirements checklist -->
+          <ul class="req-list" id="pwReqs" aria-label="Password requirements">
+            <li id="req-len"  data-re="len">8+ characters</li>
+            <li id="req-upper" data-re="upper">Uppercase letter</li>
+            <li id="req-digit" data-re="digit">Digit</li>
+            <li id="req-special" data-re="special">Special character</li>
+          </ul>
+          <span class="field-error" id="passwordErr" role="alert"></span>
+        </div>
+
+        <!-- Confirm password -->
+        <div class="field">
+          <label for="confirm">Confirm password</label>
+          <div class="pw-wrap">
+            <input
+              id="confirm"
+              name="confirm"
+              type="password"
+              autocomplete="new-password"
+              placeholder="Repeat your password"
+              maxlength="128"
+              required
+              aria-describedby="confirmErr"
+            >
+            <button
+              type="button"
+              class="pw-toggle"
+              aria-label="Show password"
+              aria-pressed="false"
+              id="pwToggle2"
+            >👁</button>
+          </div>
+          <span class="field-error" id="confirmErr" role="alert"></span>
+        </div>
+
+        <!-- CAPTCHA -->
+        <div class="field">
+          <label>Verify you are human</label>
+          <div class="captcha-row">
+            <span class="captcha-question" id="captchaQuestion" aria-live="polite">Loading…</span>
+            <button
+              type="button"
+              class="captcha-refresh"
+              id="captchaRefresh"
+              aria-label="Get a new CAPTCHA challenge"
+              title="New challenge"
+            >↺</button>
+            <div class="captcha-input-wrap">
+              <input
+                id="captchaAns"
+                name="captchaAns"
+                type="number"
+                inputmode="numeric"
+                placeholder="Answer"
+                min="-200"
+                max="200"
+                required
+                aria-label="CAPTCHA answer"
+                aria-describedby="captchaErr"
+              >
+            </div>
+          </div>
+          <span class="field-error" id="captchaErr" role="alert"></span>
+        </div>
+
+        <!-- Submit -->
+        <button type="submit" class="btn-submit" id="submitBtn" disabled>
+          <span class="btn-text">Create account</span>
+          <span class="spinner" aria-hidden="true"></span>
+        </button>
+
+      </form>
+
+      <div class="auth-footer">
+        Already have an account? <a href="login.html">Sign in</a>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    'use strict';
+
+    const API = window.CGAI_API_BASE || (['localhost', '127.0.0.1'].includes(location.hostname) ? 'http://127.0.0.1:8001' : '');
+
+    /* ── Helpers ─────────────────────────────────────────────── */
+    const $  = id => document.getElementById(id);
+    const qs = s  => document.querySelector(s);
+    const touchedFields = new Set();
+    let submitted = false;
+    let isSubmitting = false;
+    let passwordPolicy = null;
+
+    function showAlert(msg, type = 'error') {
+      const el = $('alert');
+      el.className = `alert ${type} show`;
+      $('alertMsg').textContent = msg;
+      $('alert').querySelector('.alert-icon').textContent =
+        type === 'success' ? '✓' : '⚠';
+    }
+    function clearAlert() {
+      $('alert').className = 'alert';
+      $('alertMsg').textContent = '';
+    }
+    function fieldError(id, msg, isValid = false) {
+      const err = $(id + 'Err');
+      const inp = fieldInput(id);
+      if (!err) return;
+      err.textContent = msg;
+      if (inp) {
+        inp.setAttribute('aria-invalid', msg ? 'true' : 'false');
+        if (isValid && !msg) inp.setAttribute('aria-valid', 'true');
+        else inp.removeAttribute('aria-valid');
+      }
+    }
+    function setLoading(on) {
+      const btn = $('submitBtn');
+      isSubmitting = on;
+      btn.classList.toggle('loading', on);
+      renderValidation();
+    }
+
+    /* ── Background particles ────────────────────────────────── */
+    (function initBg() {
+      const canvas = $('bg');
+      const ctx = canvas.getContext('2d');
+      let dots = [];
+      function resize() {
+        canvas.width  = innerWidth;
+        canvas.height = innerHeight;
+        dots = Array.from({ length: innerWidth < 700 ? 30 : 60 }, () => ({
+          x: Math.random() * canvas.width,
+          y: Math.random() * canvas.height,
+          r: Math.random() * 1.4 + .4,
+          v: Math.random() * .2 + .04,
+          z: Math.random(),
+        }));
+      }
+      function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        dots.forEach(d => {
+          d.y -= d.v;
+          if (d.y < -5) { d.y = canvas.height + 5; d.x = Math.random() * canvas.width; }
+          ctx.fillStyle = `rgba(${d.z > .5 ? '10,143,176' : '47,91,234'},${.18 + d.z * .3})`;
+          ctx.beginPath();
+          ctx.arc(d.x, d.y, d.r, 0, 7);
+          ctx.fill();
+        });
+        requestAnimationFrame(draw);
+      }
+      resize();
+      addEventListener('resize', resize);
+      if (!matchMedia('(prefers-reduced-motion: reduce)').matches) draw();
+    })();
+
+    /* ── Password show/hide ──────────────────────────────────── */
+    function bindToggle(btnId, inputId) {
+      $(btnId).addEventListener('click', () => {
+        const inp = $(inputId);
+        const btn = $(btnId);
+        const showing = inp.type === 'text';
+        inp.type = showing ? 'password' : 'text';
+        btn.setAttribute('aria-pressed', String(!showing));
+        btn.setAttribute('aria-label', showing ? 'Show password' : 'Hide password');
+        btn.textContent = showing ? '👁' : '🙈';
+      });
+    }
+    bindToggle('pwToggle',  'password');
+    bindToggle('pwToggle2', 'confirm');
+
+    /* ── Password strength and policy ───────────────────────── */
+    const PASSWORD_RULES = [
+      { key: 'len', field: 'min_length', label: 'req-len', text: n => `${n}+ characters`, test: (v, p) => v.length >= p.min_length },
+      { key: 'upper', field: 'require_uppercase', label: 'req-upper', text: () => 'Uppercase letter', test: v => /[A-Z]/.test(v) },
+      { key: 'digit', field: 'require_digit', label: 'req-digit', text: () => 'Digit', test: v => /\d/.test(v) },
+      { key: 'special', field: 'require_special', label: 'req-special', text: () => 'Special character', test: v => /[^A-Za-z0-9]/.test(v) },
+    ];
+
+    function updatePasswordRequirements() {
+      if (!passwordPolicy) return;
+      for (const rule of PASSWORD_RULES) {
+        const item = $(rule.label);
+        item.hidden = rule.key !== 'len' && !passwordPolicy[rule.field];
+        item.textContent = rule.key === 'len'
+          ? rule.text(passwordPolicy.min_length)
+          : rule.text();
+      }
+      $('password').minLength = passwordPolicy.min_length;
+      $('confirm').minLength = passwordPolicy.min_length;
+    }
+
+    function updateStrength(password) {
+      const activeRules = PASSWORD_RULES.filter(rule =>
+        rule.key === 'len' || (passwordPolicy && passwordPolicy[rule.field])
+      );
+      let met = 0;
+      for (const rule of PASSWORD_RULES) {
+        const satisfied = rule.test(password, passwordPolicy || { min_length: 8 });
+        $(rule.label).classList.toggle('met', satisfied);
+        if (activeRules.includes(rule) && satisfied) met += 1;
+      }
+      const percent = activeRules.length ? Math.round(met / activeRules.length * 100) : 0;
+      const level = !password ? '' : percent < 25 ? 'Weak' : percent < 50 ? 'Fair' : percent < 100 ? 'Good' : 'Strong';
+      const colors = { Weak: '#d8294d', Fair: '#e87b0a', Good: '#0a8fb0', Strong: '#12a56b' };
+      $('strengthFill').style.width = `${percent}%`;
+      $('strengthFill').style.background = colors[level] || 'transparent';
+      $('strengthLabel').textContent = level;
+      $('strengthBar').setAttribute('aria-valuenow', String(percent));
+    }
+
+    /* ── CAPTCHA ─────────────────────────────────────────────── */
+    let captchaId = '';
+    const FIELD_IDS = ['username', 'email', 'password', 'confirm', 'captcha'];
+
+    function emailLooksValid(value) {
+      const email = value.trim();
+      if (!email || email.length > 254) return false;
+      const parts = email.split('@');
+      if (parts.length !== 2) return false;
+      const [local, domain] = parts;
+      if (
+        !local || local.length > 64 || local.startsWith('.') ||
+        local.endsWith('.') || local.includes('..') ||
+        !/^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+$/.test(local)
+      ) return false;
+      const labels = domain.split('.');
+      return labels.length >= 2 &&
+        labels.every(label =>
+          label.length >= 1 && label.length <= 63 &&
+          /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(label)
+        ) &&
+        /^[A-Za-z]{2,63}$/.test(labels[labels.length - 1]);
+    }
+
+    function fieldMessage(id) {
+      const value = id === 'captcha' ? $('captchaAns').value.trim() : $(id).value;
+      if (id === 'username') {
+        const username = value.trim();
+        if (!username) return 'Enter a username.';
+        if (!/^[A-Za-z0-9_.-]{3,32}$/.test(username)) {
+          return 'Use 3–32 letters, digits, underscores, hyphens, or dots.';
+        }
+      } else if (id === 'email') {
+        if (!value.trim()) return 'Email address is required.';
+        if (!emailLooksValid(value)) return 'Please enter a valid email address.';
+      } else if (id === 'password') {
+        if (!value.trim()) return 'Enter a password.';
+        if (!passwordPolicy) return 'Password requirements are loading.';
+        if (value.length < passwordPolicy.min_length) {
+          return `Password must be at least ${passwordPolicy.min_length} characters.`;
+        }
+        for (const rule of PASSWORD_RULES.slice(1)) {
+          if (passwordPolicy[rule.field] && !rule.test(value, passwordPolicy)) {
+            return `Add at least one ${rule.text().toLowerCase()}.`;
+          }
+        }
+      } else if (id === 'confirm') {
+        if (!value) return 'Please confirm your password.';
+        if (value !== $('password').value) return 'Passwords do not match.';
+      } else if (id === 'captcha') {
+        if (!/^-?\d+$/.test(value)) return 'Enter a numeric answer for the CAPTCHA.';
+        if (!captchaId) return 'CAPTCHA not loaded. Click ↺ to reload.';
+      }
+      return '';
+    }
+
+    function fieldInput(id) {
+      return $(id === 'captcha' ? 'captchaAns' : id);
+    }
+
+    function renderValidation() {
+      for (const id of FIELD_IDS) {
+        const message = fieldMessage(id);
+        const reveal = submitted || touchedFields.has(id);
+        if (reveal) {
+          fieldError(id, message, !message);
+          if (id === 'email') {
+            $('emailStatus').textContent = !message && $('email').value.trim()
+              ? 'Email format looks valid.'
+              : '';
+          }
+        }
+      }
+      updateStrength($('password').value);
+      $('submitBtn').disabled = isSubmitting || !passwordPolicy ||
+        FIELD_IDS.some(id => Boolean(fieldMessage(id)));
+    }
+
+    async function loadCaptcha() {
+      captchaId = '';
+      $('captchaQuestion').textContent = '…';
+      $('captchaAns').value = '';
+      fieldError('captcha', '');
+      renderValidation();
+      try {
+        const res = await fetch(`${API}/captcha`);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        if (!data || typeof data.id !== 'string' || typeof data.question !== 'string') {
+          throw new Error('Invalid CAPTCHA response format');
+        }
+        captchaId = data.id;
+        $('captchaQuestion').textContent = data.question;
+      } catch (err) {
+        console.error('CAPTCHA loading failed:', err);
+        $('captchaQuestion').textContent = 'Error';
+        showAlert('Could not load CAPTCHA. Is the backend running?');
+      } finally {
+        renderValidation();
+      }
+    }
+
+    async function loadPasswordPolicy() {
+      try {
+        const res = await fetch(`${API}/auth/password-policy`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const policy = await res.json();
+        if (
+          !Number.isInteger(policy.min_length) || policy.min_length < 8 ||
+          policy.min_length > 128 ||
+          !['require_uppercase', 'require_digit', 'require_special']
+            .every(key => typeof policy[key] === 'boolean')
+        ) throw new Error('Invalid password policy response');
+        passwordPolicy = policy;
+        updatePasswordRequirements();
+        renderValidation();
+      } catch (err) {
+        console.error('Password policy loading failed:', err);
+        showAlert('Could not load password requirements. Please reload the page.');
+        renderValidation();
+      }
+    }
+
+    for (const id of FIELD_IDS) {
+      const input = fieldInput(id);
+      input.addEventListener('input', () => {
+        touchedFields.add(id);
+        clearAlert();
+        renderValidation();
+      });
+      input.addEventListener('blur', () => {
+        touchedFields.add(id);
+        renderValidation();
+      });
+    }
+
+    $('captchaRefresh').addEventListener('click', loadCaptcha);
+    loadCaptcha();
+    loadPasswordPolicy();
+
+    /* ── Form submit ─────────────────────────────────────────── */
+    $('regForm').addEventListener('submit', async e => {
+      e.preventDefault();
+      submitted = true;
+      clearAlert();
+      renderValidation();
+
+      const username = $('username').value.trim();
+      const email    = $('email').value.trim().toLowerCase();
+      const password = $('password').value;
+      const confirm  = $('confirm').value;
+      const ansRaw   = $('captchaAns').value.trim();
+
+      if ($('submitBtn').disabled) return;
+
+      setLoading(true);
+      try {
+        const res = await fetch(`${API}/auth/register`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            username,
+            email,
+            password,
+            confirm,
+            captcha_id:  captchaId,
+            captcha_ans: Number(ansRaw),
+          }),
+        });
+
+        const data = await res.json().catch(() => null);
+
+        if (res.ok) {
+          showAlert('Account created! Redirecting to sign in…', 'success');
+          setTimeout(() => { window.location.href = 'login.html'; }, 1400);
+          return;
+        }
+
+        /* Map backend errors to field-level feedback */
+        const detail = Array.isArray(data?.detail)
+          ? data.detail.map(error => error.msg).filter(Boolean).join(' ')
+          : data?.detail || 'Registration failed. Please try again.';
+
+        if (res.status === 409) {
+          if (detail.toLowerCase().includes('username')) {
+            touchedFields.add('username');
+            fieldError('username', 'That username is already taken.');
+          } else if (detail.toLowerCase().includes('email')) {
+            touchedFields.add('email');
+            fieldError('email', 'That email is already registered.');
+          } else {
+            showAlert(detail);
+          }
+          loadCaptcha();
+        } else if (res.status === 422) {
+          if (detail.toLowerCase().includes('captcha')) {
+            touchedFields.add('captcha');
+            fieldError('captcha', detail);
+          } else if (detail.toLowerCase().includes('password') && detail.toLowerCase().includes('match')) {
+            touchedFields.add('confirm');
+            fieldError('confirm', detail);
+          } else if (detail.toLowerCase().includes('password')) {
+            touchedFields.add('password');
+            fieldError('password', detail);
+          } else if (detail.toLowerCase().includes('username')) {
+            touchedFields.add('username');
+            fieldError('username', detail);
+          } else if (detail.toLowerCase().includes('email')) {
+            touchedFields.add('email');
+            fieldError('email', detail);
+          } else {
+            showAlert(detail);
+          }
+          loadCaptcha();
+        } else {
+          showAlert(detail);
+          loadCaptcha();
+        }
+
+      } catch {
+        showAlert('Could not reach the server. Check that the backend is running and the API URL is configured.');
+        loadCaptcha();
+      } finally {
+        setLoading(false);
+        renderValidation();
+      }
+    });
+
+    /* ── Redirect if already authenticated ─────────────────── */
+    (async () => {
+      try {
+        const res = await fetch(`${API}/auth/me`, { credentials: 'include' });
+        if (res.ok) window.location.replace('index.html');
+      } catch { /* not authenticated or server down — stay on page */ }
+    })();
+  </script>
+</body>
+</html>

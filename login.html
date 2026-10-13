@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Login — CallGuardianAI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700&family=Sora:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="auth.css">
+</head>
+<body>
+  <canvas id="bg" aria-hidden="true"></canvas>
+
+  <div class="auth-wrap">
+    <div class="auth-card">
+
+      <!-- Brand -->
+      <a href="index.html" class="brand" aria-label="CallGuardianAI home">
+        <span class="logo" aria-hidden="true"></span>
+        <span class="brand-text">CallGuardian<i>AI</i></span>
+      </a>
+
+      <h1>Welcome back</h1>
+      <p class="subtitle">Sign in to your account to continue.</p>
+
+      <!-- Alert banner -->
+      <div id="alert" class="alert" role="alert" aria-live="polite">
+        <span class="alert-icon" aria-hidden="true">⚠</span>
+        <span id="alertMsg"></span>
+      </div>
+
+      <form id="loginForm" novalidate autocomplete="on">
+
+        <!-- Username or email -->
+        <div class="field">
+          <label for="credential">Username or email</label>
+          <input
+            id="credential"
+            name="credential"
+            type="text"
+            autocomplete="username"
+            placeholder="yourname or you@example.com"
+            maxlength="254"
+            required
+            aria-describedby="credentialErr"
+          >
+          <span class="field-error" id="credentialErr" role="alert"></span>
+        </div>
+
+        <!-- Password -->
+        <div class="field">
+          <label for="password">Password</label>
+          <div class="pw-wrap">
+            <input
+              id="password"
+              name="password"
+              type="password"
+              autocomplete="current-password"
+              placeholder="Your password"
+              maxlength="128"
+              required
+              aria-describedby="passwordErr"
+            >
+            <button
+              type="button"
+              class="pw-toggle"
+              aria-label="Show password"
+              aria-pressed="false"
+              id="pwToggle"
+            >👁</button>
+          </div>
+          <span class="field-error" id="passwordErr" role="alert"></span>
+        </div>
+
+        <!-- CAPTCHA -->
+        <div class="field">
+          <label>Verify you are human</label>
+          <div class="captcha-row">
+            <span class="captcha-question" id="captchaQuestion" aria-live="polite">Loading…</span>
+            <button
+              type="button"
+              class="captcha-refresh"
+              id="captchaRefresh"
+              aria-label="Get a new CAPTCHA challenge"
+              title="New challenge"
+            >↺</button>
+            <div class="captcha-input-wrap">
+              <input
+                id="captchaAns"
+                name="captchaAns"
+                type="number"
+                inputmode="numeric"
+                placeholder="Answer"
+                min="-200"
+                max="200"
+                required
+                aria-label="CAPTCHA answer"
+                aria-describedby="captchaErr"
+              >
+            </div>
+          </div>
+          <span class="field-error" id="captchaErr" role="alert"></span>
+        </div>
+
+        <!-- Submit -->
+        <button type="submit" class="btn-submit" id="submitBtn" disabled>
+          <span class="btn-text">Sign in</span>
+          <span class="spinner" aria-hidden="true"></span>
+        </button>
+
+      </form>
+
+      <div class="auth-footer">
+        Don't have an account? <a href="register.html">Create one</a>
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    'use strict';
+
+    const API = window.CGAI_API_BASE || (['localhost', '127.0.0.1'].includes(location.hostname) ? 'http://127.0.0.1:8001' : '');
+
+    /* ── Helpers ─────────────────────────────────────────────── */
+    const $  = id => document.getElementById(id);
+    const qs = s  => document.querySelector(s);
+    const touchedFields = new Set();
+    let submitted = false;
+    let isSubmitting = false;
+    let captchaId = '';
+
+    function showAlert(msg, type = 'error') {
+      const el = $('alert');
+      el.className = `alert ${type} show`;
+      $('alertMsg').textContent = msg;
+      $('alert').querySelector('.alert-icon').textContent =
+        type === 'success' ? '✓' : '⚠';
+    }
+    function clearAlert() {
+      $('alert').className = 'alert';
+      $('alertMsg').textContent = '';
+    }
+    function fieldError(id, msg, isValid = false) {
+      const inp = $(id === 'captcha' ? 'captchaAns' : id);
+      const err = $(id + 'Err');
+      if (!err) return;
+      err.textContent = msg;
+      if (inp) {
+        inp.setAttribute('aria-invalid', msg ? 'true' : 'false');
+        if (isValid && !msg) inp.setAttribute('aria-valid', 'true');
+        else inp.removeAttribute('aria-valid');
+      }
+    }
+    function setLoading(on) {
+      const btn = $('submitBtn');
+      isSubmitting = on;
+      btn.classList.toggle('loading', on);
+      updateFormState();
+    }
+
+    /* ── Background particles ────────────────────────────────── */
+    (function initBg() {
+      const canvas = $('bg');
+      const ctx = canvas.getContext('2d');
+      let dots = [];
+      function resize() {
+        canvas.width  = innerWidth;
+        canvas.height = innerHeight;
+        dots = Array.from({ length: innerWidth < 700 ? 30 : 60 }, () => ({
+          x: Math.random() * canvas.width,
+          y: Math.random() * canvas.height,
+          r: Math.random() * 1.4 + .4,
+          v: Math.random() * .2 + .04,
+          z: Math.random(),
+        }));
+      }
+      function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        dots.forEach(d => {
+          d.y -= d.v;
+          if (d.y < -5) { d.y = canvas.height + 5; d.x = Math.random() * canvas.width; }
+          ctx.fillStyle = `rgba(${d.z > .5 ? '10,143,176' : '47,91,234'},${.18 + d.z * .3})`;
+          ctx.beginPath();
+          ctx.arc(d.x, d.y, d.r, 0, 7);
+          ctx.fill();
+        });
+        requestAnimationFrame(draw);
+      }
+      resize();
+      addEventListener('resize', resize);
+      if (!matchMedia('(prefers-reduced-motion: reduce)').matches) draw();
+    })();
+
+    /* ── Password show/hide ──────────────────────────────────── */
+    $('pwToggle').addEventListener('click', () => {
+      const inp = $('password');
+      const btn = $('pwToggle');
+      const showing = inp.type === 'text';
+      inp.type = showing ? 'password' : 'text';
+      btn.setAttribute('aria-pressed', String(!showing));
+      btn.setAttribute('aria-label', showing ? 'Show password' : 'Hide password');
+      btn.textContent = showing ? '👁' : '🙈';
+    });
+
+    /* ── CAPTCHA ─────────────────────────────────────────────── */
+    async function loadCaptcha() {
+      captchaId = '';
+      $('captchaQuestion').textContent = '…';
+      $('captchaAns').value = '';
+      fieldError('captcha', '');
+      updateFormState();
+      try {
+        const res = await fetch(`${API}/captcha`);
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+        }
+        const data = await res.json();
+        if (!data || typeof data.id !== 'string' || typeof data.question !== 'string') {
+          throw new Error('Invalid CAPTCHA response format');
+        }
+        captchaId = data.id;
+        $('captchaQuestion').textContent = data.question;
+      } catch (err) {
+        console.error('CAPTCHA loading failed:', err);
+        $('captchaQuestion').textContent = 'CAPTCHA not loaded. Click ↻ to reload.';
+        showAlert('Could not load CAPTCHA. Is the backend running on port 8001?');
+      } finally {
+        updateFormState();
+      }
+    }
+
+    function fieldMessage(id) {
+      if (id === 'credential' && !$('credential').value.trim()) {
+        return 'Enter your username or email.';
+      }
+      if (id === 'password' && !$('password').value) {
+        return 'Enter your password.';
+      }
+      if (id === 'captcha') {
+        const answer = $('captchaAns').value.trim();
+        if (!/^-?\d+$/.test(answer)) return 'Enter a numeric answer for the CAPTCHA.';
+        if (!captchaId) return 'CAPTCHA not loaded. Click ↺ to reload.';
+      }
+      return '';
+    }
+
+    function updateFormState() {
+      for (const id of ['credential', 'password', 'captcha']) {
+        const message = fieldMessage(id);
+        if (submitted || touchedFields.has(id)) {
+          fieldError(id, message, !message);
+        }
+      }
+      $('submitBtn').disabled = isSubmitting ||
+        ['credential', 'password', 'captcha'].some(id => Boolean(fieldMessage(id)));
+    }
+
+    for (const [id, inputId] of [
+      ['credential', 'credential'],
+      ['password', 'password'],
+      ['captcha', 'captchaAns'],
+    ]) {
+      const input = $(inputId);
+      input.addEventListener('input', () => {
+        touchedFields.add(id);
+        clearAlert();
+        updateFormState();
+      });
+      input.addEventListener('blur', () => {
+        touchedFields.add(id);
+        updateFormState();
+      });
+    }
+
+    $('captchaRefresh').addEventListener('click', loadCaptcha);
+    loadCaptcha();
+
+    /* ── Form submit ─────────────────────────────────────────── */
+    $('loginForm').addEventListener('submit', async e => {
+      e.preventDefault();
+      submitted = true;
+      clearAlert();
+      updateFormState();
+
+      const credential = $('credential').value.trim();
+      const password   = $('password').value;
+      const ansRaw     = $('captchaAns').value.trim();
+      if ($('submitBtn').disabled) return;
+
+      setLoading(true);
+      try {
+        const res = await fetch(`${API}/auth/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',   // send & receive HttpOnly cookie
+          body: JSON.stringify({
+            credential,
+            password,
+            captcha_id:  captchaId,
+            captcha_ans: Number(ansRaw),
+          }),
+        });
+
+        const data = await res.json().catch(() => null);
+
+        if (res.ok) {
+          // Store CSRF token from cookie for later API calls
+          // (the cgai_csrf cookie is readable by JS — not HttpOnly)
+          showAlert('Signed in! Redirecting…', 'success');
+          isRedirecting = true; // Prevent auth check from racing
+          setTimeout(() => { 
+            if (isRedirecting) { // Only redirect if not already redirecting
+              window.location.replace('index.html');
+            }
+          }, 600);
+          return;
+        }
+
+        /* ── Map backend status codes to friendly messages ── */
+        const detail = Array.isArray(data?.detail)
+          ? data.detail.map(error => error.msg).filter(Boolean).join(' ')
+          : data?.detail || 'Login failed. Please try again.';
+        if (res.status === 422) {
+          if (detail.toLowerCase().includes('captcha')) {
+            touchedFields.add('captcha');
+            fieldError('captcha', detail);
+          } else if (detail.toLowerCase().includes('password')) {
+            touchedFields.add('password');
+            fieldError('password', detail);
+          } else if (detail.toLowerCase().includes('credential')) {
+            touchedFields.add('credential');
+            fieldError('credential', detail);
+          } else {
+            showAlert(detail);
+          }
+          loadCaptcha();
+        } else if (res.status === 401) {
+          showAlert('Invalid email/username or password.');
+          $('password').value = '';
+          loadCaptcha();
+        } else if (res.status === 429) {
+          showAlert(detail);
+          loadCaptcha();
+        } else {
+          showAlert(detail);
+          loadCaptcha();
+        }
+
+      } catch {
+        showAlert('Could not reach the server. Make sure the backend is running on port 8001.');
+        loadCaptcha();
+      } finally {
+        setLoading(false);
+        updateFormState();
+      }
+    });
+
+    /* ── Redirect if already authenticated ─────────────────── */
+    let isRedirecting = false; // Prevent multiple redirects
+    (async () => {
+      try {
+        const res = await fetch(`${API}/auth/me`, { credentials: 'include' });
+        if (res.ok && !isRedirecting) {
+          isRedirecting = true;
+          window.location.replace('index.html');
+        }
+      } catch { /* not authenticated or server down — stay on page */ }
+    })();
+  </script>
+</body>
+</html>

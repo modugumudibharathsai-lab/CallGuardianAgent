@@ -1,0 +1,39 @@
+services:
+  - type: web
+    name: callguardianai
+    runtime: docker
+    # Use "free" for a no-cost demo (SQLite data is lost on every restart/redeploy).
+    # Change to "starter" ($7/mo) and uncomment the disk block below for persistence.
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    # ── Persistent disk (requires plan: starter or higher) ────────────────
+    # Uncomment this block if you upgrade to a paid plan.
+    # disk:
+    #   name: callguardianai-data
+    #   mountPath: /var/data
+    #   sizeGB: 1
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false          # Set manually in the Render dashboard — never committed to Git
+      - key: GEMINI_MODEL
+        value: gemini-1.5-flash
+      - key: CALLGUARDIAN_DB_PATH
+        # Free plan: /app/callguardian.db (ephemeral, wiped on restart)
+        # Paid plan with disk: change to /var/data/callguardian.db
+        value: /app/callguardian.db
+      - key: AUTH_COOKIE_SECURE
+        value: "true"
+      # CORS_ALLOWED_ORIGINS: Render auto-injects RENDER_EXTERNAL_URL so
+      # same-origin requests are always allowed. Only set this if you need
+      # to allow an additional separate frontend origin (e.g. Netlify).
+      - key: CORS_ALLOWED_ORIGINS
+        value: ""
+      - key: AUTH_PASSWORD_MIN_LENGTH
+        value: "8"
+      - key: AUTH_PASSWORD_REQUIRE_UPPERCASE
+        value: "true"
+      - key: AUTH_PASSWORD_REQUIRE_DIGIT
+        value: "true"
+      - key: AUTH_PASSWORD_REQUIRE_SPECIAL
+        value: "true"
